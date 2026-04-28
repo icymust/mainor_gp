@@ -1,5 +1,11 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { useEffect } from "react";
 
 export default function DashboardPage() {
-  redirect("/materials");
+  useEffect(() => {
+    window.location.replace("/materials");
+  }, []);
+
+  return null;
 }
