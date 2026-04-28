@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function eekEmail() {
+      return signedIn()
+        && request.auth.token.email.matches('^[A-Za-zÀ-ž-]+\\.[A-Za-zÀ-ž-]+@eek\\.ee$');
+    }
+
+    match /users/{userId} {
+      allow read, update: if eekEmail() && request.auth.uid == userId;
+      allow create: if eekEmail() && request.auth.uid == userId;
+    }
+
+    match /materials/{materialId} {
+      allow read: if eekEmail();
+      allow create: if eekEmail()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerEmail == request.auth.token.email
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
+        && (
+          request.resource.data.storagePath.matches('^materials/' + request.auth.uid + '/.*')
+          || request.resource.data.storagePath.matches('^firestore/' + request.auth.uid + '/.*')
+        );
+      allow update: if false;
+      allow delete: if eekEmail() && resource.data.ownerId == request.auth.uid;
+
+      match /chunks/{chunkId} {
+        allow read: if eekEmail();
+        allow create: if eekEmail()
+          && request.resource.data.ownerId == request.auth.uid
+          && request.resource.data.index is int
+          && request.resource.data.data is string
+          && request.resource.data.data.size() < 800000;
+        allow update: if false;
+        allow delete: if eekEmail() && resource.data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}

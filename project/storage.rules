@@ -1,0 +1,19 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedInEek() {
+      return request.auth != null
+        && request.auth.token.email.matches('^[A-Za-zÀ-ž-]+\\.[A-Za-zÀ-ž-]+@eek\\.ee$');
+    }
+
+    match /materials/{userId}/{fileName} {
+      allow read: if signedInEek();
+      allow create: if signedInEek()
+        && request.auth.uid == userId
+        && request.resource.size < 30 * 1024 * 1024;
+      allow update: if false;
+      allow delete: if signedInEek() && request.auth.uid == userId;
+    }
+  }
+}
