@@ -5,46 +5,30 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { FirebaseError } from "firebase/app";
-import { collection, deleteDoc, doc, serverTimestamp, setDoc } from "firebase/firestore";
-import { deleteObject, ref } from "firebase/storage";
+import { collection, doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { Toast, ToastType } from "../components/Toast";
-import { auth, db, storage } from "../lib/firebase";
+import { auth, db } from "../lib/firebase";
 import { localMaterialId, saveLocalMaterial } from "../lib/localMaterials";
 import { courses, detectFileType, isEekEmail, parseTags, subjects } from "../lib/materials";
+import { getSupabase, supabaseBucket } from "../lib/supabase";
 
 function uploadErrorMessage(error: unknown) {
   if (error instanceof FirebaseError) {
-    if (error.code === "storage/unauthorized" || error.code === "permission-denied") {
-      return "Firebase keelas üleslaadimise. Kontrolli, et oled EEK kontoga sisse logitud ja Firebase rules on deployitud.";
-    }
-    if (error.code === "storage/canceled") return "Üleslaadimine katkestati.";
-    if (error.code === "storage/retry-limit-exceeded") {
-      return "Võrguühendus katkestas üleslaadimise. Proovi uuesti väiksema failiga.";
-    }
-    if (error.code === "storage/bucket-not-found") {
-      return "Firebase Storage bucketit ei leitud. Kontrolli Firebase projekti seadistust.";
+    if (error.code === "permission-denied") {
+      return "Firebase keelas materjali andmete salvestamise. Kontrolli Firestore rules.";
     }
     return `Firebase viga: ${error.code}`;
   }
   if (error instanceof Error && error.message) {
-    if (error.message.includes("storage/unauthorized") || error.message.includes("403")) {
-      return "Firebase keelas üleslaadimise. Kontrolli, et Storage on enabled ja storage.rules on deployitud.";
+    if (error.message.includes("403") || error.message.toLowerCase().includes("row-level security")) {
+      return "Supabase keelas faili üleslaadimise. Kontrolli Storage bucket policies.";
     }
     if (error.message.includes("timed out")) {
-      return "Üleslaadimine aegus. Kontrolli Firebase Storage seadistust ja võrguühendust.";
+      return "Üleslaadimine aegus. Kontrolli Supabase/Firestore seadistust ja võrguühendust.";
     }
     return error.message;
   }
   return "Üleslaadimine ebaõnnestus. Proovi uuesti.";
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Faili lugemine ebaõnnestus."));
-    reader.readAsDataURL(file);
-  });
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
@@ -62,63 +46,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
   });
 }
 
-async function uploadFileWithTimeout(
+async function uploadSupabaseFile(
   file: File,
-  user: User,
   storagePath: string,
   onProgress: (progress: number) => void,
 ) {
-  const bucket = storage.app.options.storageBucket;
-  if (!bucket) throw new Error("Firebase Storage bucket is missing from config.");
-
-  const token = await user.getIdToken();
-  const encodedPath = encodeURIComponent(storagePath);
-  const url = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o?uploadType=media&name=${encodedPath}`;
-
-  async function sendUpload(authHeader: string) {
-    return new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", url);
-      xhr.timeout = 60000;
-      xhr.setRequestHeader("Authorization", authHeader);
-      xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && event.total > 0) {
-          onProgress(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
-        } else {
-          onProgress(35);
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          onProgress(100);
-          resolve();
-          return;
-        }
-
-        reject(
-          new Error(
-            `storage/upload-failed (${xhr.status}): ${xhr.responseText || xhr.statusText}`,
-          ),
-        );
-      };
-
-      xhr.onerror = () => reject(new Error("storage/network-error: Firebase Storage request failed."));
-      xhr.ontimeout = () => reject(new Error("storage/timed-out: Firebase Storage did not finish within 60 seconds."));
-      xhr.send(file);
-    });
-  }
-
   onProgress(15);
-  try {
-    await sendUpload(`Firebase ${token}`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (!message.includes("(401)") && !message.includes("(403)")) throw error;
-    await sendUpload(`Bearer ${token}`);
-  }
+  const { error } = await getSupabase().storage.from(supabaseBucket).upload(storagePath, file, {
+    contentType: file.type || "application/octet-stream",
+    upsert: false,
+  });
+  if (error) throw error;
+  onProgress(100);
 }
 
 export default function AddPage() {
@@ -182,46 +121,17 @@ export default function AddPage() {
     setUploadStage("uploading");
     setProgress(1);
     let storagePathForCleanup: string | null = null;
-    let createdMaterialId: string | null = null;
     try {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const materialRef = doc(collection(db, "materials"));
-      createdMaterialId = materialRef.id;
-      let storagePath = `materials/${user.uid}/${Date.now()}_${safeName}`;
-      let storageProvider: "storage" | "firestore" = "storage";
-      let chunkCount = 0;
+      const storagePath = `materials/${user.uid}/${Date.now()}_${safeName}`;
+      const storageProvider = "supabase";
       const normalizedTitle = title.trim();
       const normalizedDescription = description.trim();
       const uploadedFileType = detectFileType(file);
 
-      try {
-        await uploadFileWithTimeout(file, user, storagePath, setProgress);
-        storagePathForCleanup = storagePath;
-      } catch (storageError) {
-        storageProvider = "firestore";
-        storagePath = `firestore/${user.uid}/${materialRef.id}`;
-        const dataUrl = await readFileAsDataUrl(file);
-        const [, base64Data = ""] = dataUrl.split(",");
-        const chunkSize = 650_000;
-        chunkCount = Math.ceil(base64Data.length / chunkSize);
-
-        for (let index = 0; index < chunkCount; index += 1) {
-          const start = index * chunkSize;
-          const chunk = base64Data.slice(start, start + chunkSize);
-          await withTimeout(
-            setDoc(doc(db, "materials", materialRef.id, "chunks", String(index).padStart(5, "0")), {
-              data: chunk,
-              index,
-              ownerId: user.uid,
-            }),
-            7000,
-            "Firestore chunk save timed out.",
-          );
-          setProgress(Math.min(95, Math.round(((index + 1) / chunkCount) * 95)));
-        }
-
-        if (chunkCount === 0) throw storageError;
-      }
+      await uploadSupabaseFile(file, storagePath, setProgress);
+      storagePathForCleanup = storagePath;
       setUploadStage("saving");
       await withTimeout(setDoc(materialRef, {
         title: normalizedTitle,
@@ -236,7 +146,7 @@ export default function AddPage() {
         mimeType: file.type || "application/octet-stream",
         storagePath,
         storageProvider,
-        chunkCount,
+        chunkCount: 0,
         ownerId: user.uid,
         ownerEmail: user.email,
         createdAt: serverTimestamp(),
@@ -280,14 +190,7 @@ export default function AddPage() {
         router.push("/materials");
       } catch {
         if (storagePathForCleanup) {
-          await deleteObject(ref(storage, storagePathForCleanup)).catch(() => undefined);
-        }
-        if (createdMaterialId) {
-          for (let index = 0; index < 80; index += 1) {
-            await deleteDoc(
-              doc(db, "materials", createdMaterialId, "chunks", String(index).padStart(5, "0")),
-            ).catch(() => undefined);
-          }
+          await getSupabase().storage.from(supabaseBucket).remove([storagePathForCleanup]).catch(() => undefined);
         }
         setToast({ type: "error", message: uploadErrorMessage(error) });
       }
@@ -440,7 +343,7 @@ export default function AddPage() {
               <p className="mt-3 text-sm font-semibold text-white/62">
                 {uploadStage === "saving"
                   ? "Salvestan materjali andmeid..."
-                  : "Laen faili Firebase Storage keskkonda..."}
+                  : "Laen faili Supabase Storage keskkonda..."}
               </p>
             </div>
           )}

@@ -12,12 +12,12 @@ import {
   query,
   QueryDocumentSnapshot,
 } from "firebase/firestore";
-import { deleteObject, getDownloadURL, ref } from "firebase/storage";
 import { IconDownload, IconSearch, IconTrash } from "../components/Icons";
 import { Toast, ToastType } from "../components/Toast";
-import { auth, db, storage } from "../lib/firebase";
+import { auth, db } from "../lib/firebase";
 import { deleteLocalMaterial, downloadLocalMaterial, getLocalMaterials } from "../lib/localMaterials";
 import { courses, fileTypes, formatBytes, Material, subjects } from "../lib/materials";
+import { getSupabase, supabaseBucket } from "../lib/supabase";
 
 function mapMaterial(snapshot: QueryDocumentSnapshot): Material {
   const data = snapshot.data();
@@ -33,7 +33,10 @@ function mapMaterial(snapshot: QueryDocumentSnapshot): Material {
     fileSize: Number(data.fileSize ?? 0),
     mimeType: String(data.mimeType ?? ""),
     storagePath: String(data.storagePath ?? ""),
-    storageProvider: data.storageProvider === "firestore" ? "firestore" : "storage",
+    storageProvider:
+      data.storageProvider === "firestore" || data.storageProvider === "supabase"
+        ? data.storageProvider
+        : "storage",
     chunkCount: Number(data.chunkCount ?? 0),
     ownerId: String(data.ownerId ?? ""),
     ownerEmail: String(data.ownerEmail ?? ""),
@@ -171,8 +174,15 @@ export default function MaterialsPage() {
         return;
       }
 
-      const url = await getDownloadURL(ref(storage, material.storagePath));
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (material.storageProvider === "supabase") {
+        const { data } = getSupabase().storage
+          .from(supabaseBucket)
+          .getPublicUrl(material.storagePath);
+        window.open(data.publicUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+
+      throw new Error("Unsupported storage provider.");
     } catch {
       setToast({ type: "error", message: "Faili linki ei õnnestunud avada." });
     }
@@ -193,8 +203,10 @@ export default function MaterialsPage() {
         await Promise.all(chunksSnapshot.docs.map((chunkDoc) => deleteDoc(chunkDoc.ref)));
       } else if (material.storageProvider === "local") {
         await deleteLocalMaterial(material.id);
+      } else if (material.storageProvider === "supabase") {
+        await getSupabase().storage.from(supabaseBucket).remove([material.storagePath]).catch(() => undefined);
       } else {
-        await deleteObject(ref(storage, material.storagePath));
+        throw new Error("Unsupported storage provider.");
       }
       if (material.storageProvider !== "local") {
         await deleteDoc(doc(db, "materials", material.id));

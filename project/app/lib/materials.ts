@@ -33,7 +33,7 @@ export type Material = {
   fileSize: number;
   mimeType: string;
   storagePath: string;
-  storageProvider?: "storage" | "firestore" | "local";
+  storageProvider?: "storage" | "firestore" | "supabase" | "local";
   chunkCount?: number;
   ownerId: string;
   ownerEmail: string;
