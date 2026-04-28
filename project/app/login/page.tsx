@@ -113,6 +113,9 @@ export default function LoginPage() {
             Platvorm on mõeldud ülikooli sisemiseks kasutuseks. Konto loomiseks
             sobib ainult EEK e-post kujul eesnimi.perekonnanimi@eek.ee.
           </p>
+          <p className="mt-5 max-w-xl rounded-2xl border border-white/12 bg-white/[0.06] p-4 text-base font-semibold leading-7 text-[#FFD56E]">
+            Materjalid on nähtavad ainult pärast sisselogimist.
+          </p>
         </div>
 
         <form

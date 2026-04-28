@@ -78,6 +78,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
 
 export default function MaterialsPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [loading, setLoading] = useState(true);
   const [queryText, setQueryText] = useState("");
@@ -86,9 +87,20 @@ export default function MaterialsPage() {
   const [fileType, setFileType] = useState("Kõik");
   const [toast, setToast] = useState<{ type: ToastType; message: string } | null>(null);
 
-  useEffect(() => onAuthStateChanged(auth, setUser), []);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthReady(true);
+      if (!currentUser) {
+        window.location.replace("/login");
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
+    if (!authReady || !user) return;
+
     async function loadMaterials() {
       setLoading(true);
       const localMaterials = await getLocalMaterials().catch(() => []);
@@ -121,7 +133,7 @@ export default function MaterialsPage() {
       }
     }
     loadMaterials();
-  }, []);
+  }, [authReady, user]);
 
   const filteredMaterials = useMemo(() => {
     const search = queryText.trim().toLowerCase();
